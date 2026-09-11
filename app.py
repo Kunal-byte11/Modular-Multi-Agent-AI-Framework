@@ -8,7 +8,6 @@ Deployable on Streamlit Community Cloud (100% Free Forever).
 import streamlit as st
 import os
 import time
-import re
 
 from core.base_tool import tool
 from core.base_memory import SlidingWindowMemory
@@ -40,12 +39,6 @@ st.markdown("""
         color: #64748b;
         margin-bottom: 1.5rem;
     }
-    .metric-container {
-        background: #0f172a;
-        border-radius: 8px;
-        padding: 1rem;
-        border: 1px solid #334155;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -60,12 +53,12 @@ with st.sidebar:
 
     provider = st.selectbox(
         "Select LLM Provider",
-        options=["mock", "groq", "nvidia", "gemini"],
+        options=["groq", "mock", "gemini", "nvidia"],
         format_func=lambda x: {
+            "groq": "⚡ Groq (Llama-3.1-8B Instant)",
             "mock": "🧪 Mock LLM (Zero-Cost Simulator)",
-            "groq": "⚡ Groq (Llama-3.3-70B)",
-            "nvidia": "🟢 NVIDIA NIM (Llama-3.1-70B)",
-            "gemini": "✨ Google Gemini (1.5 Flash)"
+            "gemini": "✨ Google Gemini (1.5 Flash)",
+            "nvidia": "🟢 NVIDIA NIM (Nemotron 70B / Llama 8B)"
         }[x]
     )
 
@@ -80,7 +73,7 @@ with st.sidebar:
             help="Paste your API key here or keep it in .env"
         )
         if not api_key_input:
-            st.warning(f"⚠️ {provider.upper()} API Key needed for live AI. Switch to 'Mock LLM' above to test 100% free!")
+            st.warning(f"⚠️ {provider.upper()} API Key needed. Switch to 'Mock LLM' above to test 100% free!")
 
     st.markdown("---")
     st.markdown("### 🧠 Framework Specs")
@@ -210,7 +203,6 @@ if run_button:
                 
                 with st.status(f"Running ReAct loop for {agent_name}...", expanded=True) as status:
                     st.write("💭 Formulating Thought & Selecting Tools...")
-                    time.sleep(0.4)
                     ans = agent.run(task_text)
                     results[agent_name] = ans
                     st.write(f"🛠️ Executed Tools & Captured Observations")
@@ -218,7 +210,6 @@ if run_button:
                 
                 st.success(f"**Specialist Answer:**\n\n{ans}")
                 
-                # Approximate tokens
                 total_prompt_tokens += len(task_text) // 4 + 25
                 total_comp_tokens += len(ans) // 4 + 40
 

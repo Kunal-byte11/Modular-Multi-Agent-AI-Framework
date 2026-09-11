@@ -102,7 +102,7 @@ class MockLLM(BaseLLM):
 class GroqLLM(BaseLLM):
     """
     Groq Cloud API Provider.
-    Models: llama-3.1-8b-instant, llama-3.3-70b-versatile, qwen-2.5-32b
+    Primary Model: llama-3.1-8b-instant (Fastest, High Free-Tier limits)
     """
     def __init__(self, model_name: str = "llama-3.1-8b-instant", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("GROQ_API_KEY")
@@ -120,8 +120,6 @@ class GroqLLM(BaseLLM):
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        
-        # Only active, supported Groq production models
         models_to_try = [self.model_name, "llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
 
         last_err = None
@@ -139,7 +137,7 @@ class GroqLLM(BaseLLM):
             except urllib.error.HTTPError as e:
                 last_err = e.read().decode("utf-8", errors="ignore")
                 if e.code in (400, 404, 410):
-                    continue  # Fallback to next active model
+                    continue
                 raise RuntimeError(f"Groq API Error ({e.code}): {last_err}")
             except Exception as ex:
                 last_err = str(ex)
@@ -151,9 +149,9 @@ class GroqLLM(BaseLLM):
 class NvidiaLLM(BaseLLM):
     """
     NVIDIA NIM API Provider.
-    Active models: meta/llama-3.3-70b-instruct, meta/llama-3.1-8b-instruct
+    Primary Model: nvidia/llama-3.1-nemotron-70b-instruct
     """
-    def __init__(self, model_name: str = "meta/llama-3.1-8b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
+    def __init__(self, model_name: str = "nvidia/llama-3.1-nemotron-70b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("NVIDIA_API_KEY")
         super().__init__(model_name=model_name, temperature=temperature, api_key=key)
 
@@ -169,7 +167,12 @@ class NvidiaLLM(BaseLLM):
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        models_to_try = [self.model_name, "meta/llama-3.1-8b-instruct", "meta/llama-3.3-70b-instruct"]
+        # Active NVIDIA hosted function models
+        models_to_try = [
+            self.model_name,
+            "nvidia/llama-3.1-nemotron-70b-instruct",
+            "meta/llama-3.1-8b-instruct"
+        ]
 
         last_err = None
         for model in models_to_try:
@@ -199,7 +202,7 @@ class NvidiaLLM(BaseLLM):
 class GeminiLLM(BaseLLM):
     """
     Google Gemini Provider.
-    Active models: gemini-1.5-flash, gemini-2.0-flash
+    Primary Model: gemini-1.5-flash
     """
     def __init__(self, model_name: str = "gemini-1.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
         key = api_key or os.getenv("GEMINI_API_KEY")
