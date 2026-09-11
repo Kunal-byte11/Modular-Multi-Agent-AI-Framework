@@ -8,13 +8,14 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from core.base_tool import BaseTool
 from core.base_memory import BaseMemory, SlidingWindowMemory
-from core.base_llm import BaseLLM, LLMFactory
+from core.base_llm import BaseLLM, LLMFactory, TokenCostTracker
 
 
 class BaseAgent(ABC):
     """
     Abstract Base Class for all AI Agents.
-    Encapsulates tools registry, memory management, LLM communication, and execution safety.
+    Encapsulates tools registry, memory management, LLM communication,
+    telemetry tracking, and execution safety.
     """
     def __init__(
         self,
@@ -24,6 +25,7 @@ class BaseAgent(ABC):
         llm: Optional[BaseLLM] = None,
         tools: Optional[List[BaseTool]] = None,
         memory: Optional[BaseMemory] = None,
+        tracker: Optional[TokenCostTracker] = None,
         max_iterations: int = 5
     ):
         self.name = name
@@ -31,6 +33,7 @@ class BaseAgent(ABC):
         self.system_prompt = system_prompt
         self.llm = llm or LLMFactory.create("mock")
         self.memory = memory or SlidingWindowMemory(max_messages=10)
+        self.tracker = tracker
         self.max_iterations = max_iterations
         
         # Tools Registry mapping tool_name -> BaseTool object

@@ -2,11 +2,13 @@
 agents/react_agent.py
 ----------------------
 Autonomous ReAct (Reasoning + Acting) Agent implementation.
-Strict tool enforcement, step-by-step trace collection, and loop circuit breakers.
+Strict tool enforcement, JSON-based tool calling, step-by-step trace collection,
+and loop circuit breakers.
 """
 
 from typing import List, Optional, Tuple, Dict, Any
 import re
+import json
 from core.base_agent import BaseAgent
 from core.base_tool import BaseTool
 from core.base_memory import BaseMemory
@@ -17,13 +19,28 @@ class ReActAgent(BaseAgent):
     """
     An agent that strictly implements the ReAct loop:
     1. THOUGHT: Analyzes the goal
-    2. ACTION: Calls an appropriate tool
+    2. ACTION: Calls an appropriate tool with JSON arguments
     3. OBSERVATION: Captures tool response
     4. FINAL ANSWER: Returns synthesis based on real tool output
     """
 
     def _build_system_prompt(self) -> str:
-        tools_desc = "\n".join([f"- {t.name}: {t.description}" for t in self._tools.values()])
+        # Build tool descriptions with parameter schemas
+        tools_lines = []
+        for t in self._tools.values():
+            schema = t.to_schema()
+            params = schema.get("parameters", {})
+            if params:
+                param_desc = ", ".join([
+                    f'"{p}": <{info.get("type", "any")}>'
+                    for p, info in params.items()
+                    if info.get("required", True)
+                ])
+                tools_lines.append(f'- {t.name}: {t.description}  →  ACTION: {t.name}({{{param_desc}}})')
+            else:
+                tools_lines.append(f"- {t.name}: {t.description}")
+        tools_desc = "\n".join(tools_lines)
+
         return (
             f"You are {self.name}, a {self.role}.\n"
             f"{self.system_prompt}\n\n"
@@ -31,21 +48,53 @@ class ReActAgent(BaseAgent):
             "CRITICAL INSTRUCTIONS:\n"
             "1. You do NOT have real-time live data or calculation authority on your own. You MUST NOT answer using your own assumptions or pre-training memory.\n"
             "2. If tools are available, your VERY FIRST response MUST ALWAYS call a tool using the ACTION syntax:\n"
-            "   THOUGHT: <explain which tool you need and why>\n"
-            "   ACTION: tool_name(arguments)\n"
-            "3. Wait for the OBSERVATION from the tool.\n"
-            "4. Only after receiving the OBSERVATION may you write:\n"
+            '   THOUGHT: <explain which tool you need and why>\n'
+            '   ACTION: tool_name({"param1": "value1", "param2": "value2"})\n'
+            "3. For tools with a SINGLE argument, you may use the short form:\n"
+            "   ACTION: tool_name(value)\n"
+            "4. Wait for the OBSERVATION from the tool.\n"
+            "5. Only after receiving the OBSERVATION may you write:\n"
             "   FINAL ANSWER: <concise summary based directly on the tool observation>\n\n"
             "EXAMPLE INTERACTION:\n"
             "User: Screen the banking sector.\n"
             "Assistant:\n"
             "THOUGHT: I need to screen the banking sector using indian_market_screener.\n"
-            "ACTION: indian_market_screener(banking)\n"
+            'ACTION: indian_market_screener({"sector": "banking"})\n'
             "Observation: Top Pick: SBI (CMP: ₹780, Net Profit Up: +15%)\n"
             "Assistant:\n"
             "THOUGHT: I have received the verified data from the tool.\n"
             "FINAL ANSWER: Based on our market screener, SBI is the top banking pick at CMP ₹780."
         )
+
+    def _parse_tool_args(self, tool_obj: BaseTool, raw_args: str) -> Tuple[list, dict]:
+        """
+        Parse tool arguments with JSON-first strategy and fallback to simple args.
+        Returns (positional_args, keyword_args) tuple.
+        """
+        raw_args = raw_args.strip()
+
+        # Strategy 1: Try JSON object parsing → keyword args
+        if raw_args.startswith("{"):
+            try:
+                parsed = json.loads(raw_args)
+                if isinstance(parsed, dict):
+                    return [], parsed
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 2: Try JSON array parsing → positional args
+        if raw_args.startswith("["):
+            try:
+                parsed = json.loads(raw_args)
+                if isinstance(parsed, list):
+                    return parsed, {}
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 3: Fallback to simple comma-split for backward compatibility
+        # (handles single args and simple multi-arg calls)
+        args = [a.strip().strip("'\"") for a in raw_args.split(",") if a.strip()]
+        return args, {}
 
     def run(self, user_query: str) -> str:
         # Reset memory for fresh task
@@ -63,6 +112,11 @@ class ReActAgent(BaseAgent):
             context = self.memory.get_context_window()
             response = self.llm.generate(context)
 
+            # Auto-record telemetry if tracker is attached
+            if self.tracker:
+                prompt_text = " ".join([m.content for m in context])
+                self.tracker.record_usage(prompt_text, response)
+
             # Strip any markdown code fences if model wraps output
             clean_resp = response.replace("```text", "").replace("```json", "").replace("```", "").strip()
 
@@ -76,10 +130,12 @@ class ReActAgent(BaseAgent):
                 tool_obj = self.get_tool(tool_name)
 
                 if tool_obj:
-                    # Clean up argument list
-                    args = [a.strip().strip("'\"") for a in raw_args.split(",") if a.strip()]
                     try:
-                        observation = tool_obj.execute(*args)
+                        pos_args, kw_args = self._parse_tool_args(tool_obj, raw_args)
+                        if kw_args:
+                            observation = tool_obj.execute(**kw_args)
+                        else:
+                            observation = tool_obj.execute(*pos_args)
                     except Exception as err:
                         observation = f"Tool execution failed: {str(err)}"
                 else:

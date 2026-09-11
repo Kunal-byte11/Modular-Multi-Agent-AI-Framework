@@ -3,7 +3,8 @@
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://python.org)
 [![Design Patterns](https://img.shields.io/badge/Architecture-OOP%20%26%20Design%20Patterns-orange.svg)](#-oop-design-patterns-deep-dive)
 [![Zero Dependency](https://img.shields.io/badge/Dependencies-Zero%20External%20Libs-green.svg)](#)
-[![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-purple.svg)](LICENSE)
+[![CI](https://github.com/Kunal-byte11/Modular-Multi-Agent-AI-Framework/actions/workflows/ci.yml/badge.svg)](https://github.com/Kunal-byte11/Modular-Multi-Agent-AI-Framework/actions/workflows/ci.yml)
 
 > **A production-grade, zero-dependency Multi-Agent AI Orchestration Engine engineered from scratch in pure Python using Object-Oriented Programming (OOP) and Software Design Patterns.**
 
@@ -17,10 +18,11 @@ Inspired by the internal architectures of **LangChain, CrewAI, and LangGraph**, 
 - [🧠 Real-World Analogies & Zero-Jargon Concept Guide](#-real-world-analogies--zero-jargon-concept-guide)
 - [Repository Structure](#-repository-structure)
 - [OOP & Design Patterns Deep-Dive](#-oop--design-patterns-deep-dive)
+- [⚖️ Known Architectural Trade-offs](#-known-architectural-trade-offs)
 - [Quick Start Guide](#-quick-start-guide)
-- [Running Unit Tests](#-running-unit-tests)
+- [Running Unit Tests & CI](#-running-unit-tests--ci)
 - [Live Execution Output](#-live-execution-output)
-- [🎬 YouTube Video Creation Guide & Script](#-youtube-video-creation-guide--script)
+- [🎬 YouTube & Presentation Guide](#-youtube--presentation-guide)
 - [Author & Connect](#-author--connect)
 
 ---
@@ -91,7 +93,7 @@ To understand advanced AI agent systems without getting lost in textbook theory,
 
 ### 3. API Telemetry (`TokenCostTracker`): *The Metro Smart Card Tap-In / Tap-Out*
 * **The Analogy**: When you enter a Metro station, you tap your smart card (`__enter__`). The system silently tracks your journey. When you reach your destination and tap out (`__exit__`), the gate calculates the exact fare and deducts it.
-* **In Code**: Using Python Context Managers (`with TokenCostTracker():`), the framework automatically monitors prompt & completion token consumption across all agent calls and prints the exact bill in **Indian Rupees (₹)** upon exiting the block!
+* **In Code**: Using Python Context Managers (`with TokenCostTracker():`), the framework tracks prompt & completion token consumption when invoked per workflow and calculates the exact bill in **Indian Rupees (₹)** upon exiting the block!
 
 ### 4. The Agent Brain (`ReActAgent`): *The Detective & Emergency Brake*
 * **The Analogy**: A detective doesn't guess the killer immediately. They formulate a **Thought** (*"I need to check fingerprints"*), take an **Action** (*"Dust the doorknob"*), record the **Observation** (*"Fingerprints match Person X"*), and repeat until they reach the **Final Conclusion**.
@@ -135,11 +137,30 @@ Modular-Multi-Agent-AI-Framework/
 | **Tool Registry** | **Abstract Base Class (`ABC`)** | `BaseTool` defines mandatory `@abstractmethod execute()`. Child classes that fail to implement `execute()` cannot be instantiated. |
 | **Tool Decorator** | **Function Decorator & Reflection** | `@tool` inspects Python functions, extracts docstrings for LLM reasoning schemas, and wraps them in `FunctionTool`. |
 | **Memory System** | **Sequence Protocol (`__len__`, `__getitem__`, `__iter__`)** | Makes `BaseMemory` behave like a native Python list. `SlidingWindowMemory` trims context to prevent LLM token overflow. |
-| **Semantic Store** | **Vector Strategy (Cosine Similarity)** | `SemanticMemory` performs TF-IDF word tokenization and cosine similarity search for long-term recall without heavy dependencies. |
+| **Semantic Store** | **Vector Strategy (Cosine Similarity)** | `SemanticMemory` performs lightweight word-overlap heuristic with cosine-like scoring for fast relevance-based long-term recall without heavy dependencies. |
 | **LLM Engine** | **Factory Pattern & Strategy Pattern** | `LLMFactory.create("mock")` dynamically instantiates providers (`MockLLM`, `Gemini`, `OpenAI`) without altering agent code. |
-| **API Telemetry** | **Context Manager (`__enter__`, `__exit__`)** | `with TokenCostTracker():` automatically records token consumption and outputs total cost in ₹ INR upon exiting. |
+| **API Telemetry** | **Context Manager (`__enter__`, `__exit__`)** | `with TokenCostTracker():` tracks token consumption when invoked per workflow and outputs total cost in ₹ INR upon exiting. |
 | **Agent Loop** | **State Encapsulation & Circuit Breaker** | `ReActAgent` tracks state across iterations. `max_iterations` serves as a safety circuit breaker to prevent infinite runaway loops. |
 | **Multi-Agent Team** | **Supervisor Orchestration Pattern** | `SupervisorAgent` delegates sub-tasks to specialists and aggregates heterogeneous responses into a structured executive report. |
+
+---
+
+## ⚖️ Known Architectural Trade-offs
+
+Engineering is about trade-offs. To keep this framework zero-dependency and educational while demonstrating core mechanisms, deliberate design choices were made:
+
+1. **Lightweight Word-Overlap vs. Embedding Vectors (`SemanticMemory`)**:
+   - *Design*: Uses a tokenized bag-of-words overlap heuristic scored with cosine normalization (`|A ∩ B| / (√|A| · √|B|)`).
+   - *Trade-off*: Zero external dependencies (`pip install chromadb/sentence-transformers` not needed), instant in-memory execution, but lacks dense semantic synonyms (e.g., "bank" vs "financial institution").
+2. **Character-Based Token Estimation (`TokenCostTracker`)**:
+   - *Design*: Uses `len(text) // 4` approximation for prompt and completion token counts.
+   - *Trade-off*: Removes dependency on `tiktoken` (which requires Rust compilation), accurate within ~10% for English/alphanumeric text, but inexact for specialized multilingual or code tokens.
+3. **Deterministic Testing via `MockLLM`**:
+   - *Design*: Keyword matching and canned response routing.
+   - *Trade-off*: Guarantees 100% reproducible unit tests in CI with zero cost and zero network flakiness, but does not test real LLM hallucination or adherence variance.
+4. **Cloud API Free-Tier Rate Limits**:
+   - *Design*: Integrated retry logic with exponential backoff for HTTP 429 errors.
+   - *Trade-off*: Free tiers on Groq (1000 OTPM) and Gemini (20 RPD) require throttling delays between rapid sequential calls. For production workloads, paid API tiers or local Ollama instances should be configured.
 
 ---
 
@@ -161,23 +182,22 @@ python main.py
 
 ---
 
-## 🧪 Running Unit Tests
+## 🧪 Running Unit Tests & CI
 
-Run each isolated unit test to see individual components executing:
+All components are covered by rigorous unit tests using **`pytest`** with assertions (not print scripts), automated via GitHub Actions CI across Python 3.10, 3.11, and 3.12.
 
 ```bash
-# Test 1: Tool Registry & @tool decorator
-python tests/test_tools.py
+# Run the complete test suite with detailed trace
+pytest tests/ -v
 
-# Test 2: Sliding-Window & Semantic Memory
-python tests/test_memory.py
-
-# Test 3: LLM Factory & Telemetry Context Manager
-python tests/test_llm.py
-
-# Test 4: Autonomous ReAct Agent Loop
-python tests/test_agent.py
+# Or run individual component test modules
+pytest tests/test_tools.py -v       # Milestone 1: Tool Registry & reflection schema
+pytest tests/test_memory.py -v      # Milestone 2: Sliding Window & Semantic Memory
+pytest tests/test_llm.py -v         # Milestone 3: LLM Factory & Telemetry Tracker
+pytest tests/test_agent.py -v       # Milestone 4 & 5: ReAct Loop & Supervisor Decomposition
 ```
+
+> **Note**: Each test file can also be executed directly via `python tests/test_tools.py`.
 
 ---
 
@@ -234,42 +254,10 @@ For an 18-month holding of ₹80,000 profit, LTCG tax at 12.5% comes to ₹10,00
 
 ---
 
-## 🎬 YouTube Video Creation Guide & Script
+## 🎬 YouTube & Presentation Guide
 
-Use this complete blueprint to record and publish an engaging YouTube tutorial or LinkedIn demo for this project.
-
-### 📌 Video Title Ideas:
-1. *I Built LangChain & CrewAI From Scratch in Pure Python (No Libraries!)*
-2. *Build a Multi-Agent AI Framework from Scratch | Advanced Python OOP Project*
-3. *How Autonomous AI Agents Actually Think: Building the ReAct Loop in Python*
-
----
-
-### ⏱️ Timestamp Breakdown & Speaking Script:
-
-#### **0:00 - 1:15 | The Hook & The Problem**
-* **Visual**: Show the terminal running `python main.py` with multi-agent logs and final report.
-* **Script**: *"Everyone knows how to pip install LangChain or CrewAI. But if an interviewer asks you how the ReAct loop, tool reflection, or memory buffers actually work under the hood, most developers get stuck. In this video, we are going to build a production-grade Multi-Agent AI Framework completely from scratch in Python with zero external libraries."*
-
-#### **1:15 - 3:00 | Architecture & The 5 Analogies**
-* **Visual**: Show the Eraser.io Architecture Diagram (`assets/architecture.png`) and the Real-World Analogy section from the README.
-* **Script**: *"We will build this using 5 intuitive concepts: 1) The Swiss Army Knife tool contract, 2) Human working memory buffers, 3) The Metro Card tap-in/tap-out telemetry tracker, 4) The Detective ReAct loop with emergency brakes, and 5) The Rohit Sharma Cricket Captain supervisor pattern."*
-
-#### **3:00 - 5:30 | Milestone 1 & 2: Tools & Memory Engine**
-* **Visual**: Open `core/base_tool.py` and `core/base_memory.py`.
-* **Script**: *"Notice how we use `abc.ABC` and `@abstractmethod` in `BaseTool` to enforce strict contracts. Then, we wrote our custom `@tool` decorator that inspects function docstrings automatically. In `base_memory.py`, we implement `__len__` and `__getitem__` to support native Python slicing and sliding window context management."*
-
-#### **5:30 - 8:00 | Milestone 3 & 4: LLM Factory & The ReAct Loop**
-* **Visual**: Open `core/base_llm.py` and `agents/react_agent.py`.
-* **Script**: *"Here is our `TokenCostTracker` using Python context managers `__enter__` and `__exit__` to measure live API expenses. In `react_agent.py`, you can see the core ReAct loop: the agent generates a THOUGHT, triggers an ACTION, captures the OBSERVATION, and loops with a `max_iterations` circuit breaker."*
-
-#### **8:00 - 10:30 | Milestone 5: Multi-Agent Supervisor & Live Demo**
-* **Visual**: Open `agents/supervisor_agent.py` and run `python main.py`.
-* **Script**: *"Now watch the Supervisor Agent in action. It takes a complex financial goal, delegates sector research to our Auto Specialist agent, delegates tax calculations to our Quant agent, and compiles an executive investment report."*
-
-#### **10:30 - 11:30 | Summary & GitHub Repository Link**
-* **Visual**: Show the GitHub repo page.
-* **Script**: *"All source code, unit tests, and documentation are open-sourced on my GitHub. Clone the repo, run `python main.py`, and star the project if you found it useful!"*
+A complete blueprint including title ideas, timestamp breakdown, and speaking scripts for recording a video or presentation on this project is available in:
+👉 **[docs/youtube_script.md](docs/youtube_script.md)**
 
 ---
 
@@ -282,4 +270,4 @@ Use this complete blueprint to record and publish an engaging YouTube tutorial o
 ---
 
 ## 📜 License
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.

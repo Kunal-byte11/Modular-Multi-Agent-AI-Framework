@@ -99,7 +99,7 @@ class SlidingWindowMemory(BaseMemory):
 
 class SemanticMemory(BaseMemory):
     """
-    Long-Term Memory using TF-IDF & Cosine Similarity search
+    Long-Term Memory using lightweight word-overlap heuristic with cosine-like scoring
     for fast relevance-based retrieval without external heavy dependencies.
     """
     def __init__(self, max_context: int = 5):
