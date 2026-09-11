@@ -2,7 +2,12 @@
 core/base_llm.py
 -----------------
 Verified Multi-Provider LLM Abstraction with Smart 429 Rate-Limit Auto-Retry.
-Automatically handles Free-Tier rate limits (OTPM / RPM) by pausing and retrying.
+Supports:
+- OpenRouter (100% Free models: meta-llama/llama-3.3-70b-instruct:free, gemini-2.0-flash-exp:free)
+- Groq (qwen/qwen3.6-27b)
+- Google Gemini (gemini-2.5-flash)
+- NVIDIA NIM (meta/llama-3.2-11b-vision-instruct)
+- MockLLM (Zero-cost deterministic testing)
 """
 
 from abc import ABC, abstractmethod
@@ -101,10 +106,68 @@ class MockLLM(BaseLLM):
         return f"Mock response to: '{last_user_msg[:30]}...'"
 
 
+class OpenRouterLLM(BaseLLM):
+    """
+    OpenRouter Cloud Provider.
+    Access 100% Free models (Llama-3.3-70B:free, Gemini-2.0-Flash:free) with high rate limits.
+    """
+    def __init__(self, model_name: str = "meta-llama/llama-3.3-70b-instruct:free", api_key: Optional[str] = None, temperature: float = 0.6):
+        key = api_key or os.getenv("OPENROUTER_API_KEY")
+        super().__init__(model_name=model_name, temperature=temperature, api_key=key)
+
+    def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY is missing! Set it in your .env or sidebar.")
+
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key.strip()}",
+            "HTTP-Referer": "https://github.com/Kunal-byte11/Modular-Multi-Agent-AI-Framework",
+            "X-Title": "Modular Multi-Agent AI Framework",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
+        models_to_try = [
+            self.model_name,
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemini-2.0-flash-exp:free",
+            "mistralai/mistral-7b-instruct:free"
+        ]
+
+        last_err = None
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": payload_messages,
+                "temperature": self.temperature,
+                "max_tokens": 400
+            }
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=35) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    text = data["choices"][0]["message"]["content"]
+                    if "</think>" in text:
+                        text = text.split("</think>")[-1].strip()
+                    return text
+            except urllib.error.HTTPError as e:
+                last_err = e.read().decode("utf-8", errors="ignore")
+                if e.code in (404, 429, 503) and model != models_to_try[-1]:
+                    time.sleep(1.0)
+                    continue
+                raise RuntimeError(f"OpenRouter API Error ({e.code}): {last_err}")
+            except Exception as ex:
+                last_err = str(ex)
+                continue
+
+        raise RuntimeError(f"OpenRouter Request Failed: {last_err}")
+
+
 class GroqLLM(BaseLLM):
     """
-    Groq Cloud API Provider.
-    Auto-retries with backoff on 429 rate limits.
+    Groq Cloud API Provider with 429 backoff.
     """
     def __init__(self, model_name: str = "qwen/qwen3.6-27b", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("GROQ_API_KEY")
@@ -142,12 +205,10 @@ class GroqLLM(BaseLLM):
             except urllib.error.HTTPError as e:
                 err_msg = e.read().decode("utf-8", errors="ignore")
                 if e.code == 429 and attempt < 3:
-                    # Parse retry delay if provided
                     wait_sec = 4.0
                     delay_match = re.search(r"try again in ([\d\.]+)s", err_msg)
                     if delay_match:
                         wait_sec = float(delay_match.group(1)) + 1.0
-                    print(f"⏳ [Groq Rate Limit] Pausing {wait_sec:.1f}s for quota window...")
                     time.sleep(wait_sec)
                     continue
                 raise RuntimeError(f"Groq API Error ({e.code}): {err_msg}")
@@ -210,7 +271,7 @@ class NvidiaLLM(BaseLLM):
 
 class GeminiLLM(BaseLLM):
     """
-    Google Gemini Provider with 429 Quota Backoff.
+    Google Gemini Provider.
     """
     def __init__(self, model_name: str = "gemini-2.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
         key = api_key or os.getenv("GEMINI_API_KEY")
@@ -259,7 +320,6 @@ class GeminiLLM(BaseLLM):
                     delay_match = re.search(r"retry in ([\d\.]+)s", err_msg)
                     if delay_match:
                         wait_sec = float(delay_match.group(1)) + 1.0
-                    print(f"⏳ [Gemini Quota Delay] Free-tier limit reached. Pausing {wait_sec:.1f}s...")
                     time.sleep(wait_sec)
                     continue
                 raise RuntimeError(f"Gemini API Error ({e.code}): {err_msg}")
@@ -274,10 +334,11 @@ class GeminiLLM(BaseLLM):
 
 class LLMFactory:
     _registry = {
-        "mock": MockLLM,
+        "openrouter": OpenRouterLLM,
         "groq": GroqLLM,
         "nvidia": NvidiaLLM,
-        "gemini": GeminiLLM
+        "gemini": GeminiLLM,
+        "mock": MockLLM
     }
 
     @classmethod
@@ -285,7 +346,7 @@ class LLMFactory:
         cls._registry[name.lower()] = provider_cls
 
     @classmethod
-    def create(cls, provider: str = "mock", model_name: Optional[str] = None, **kwargs) -> BaseLLM:
+    def create(cls, provider: str = "openrouter", model_name: Optional[str] = None, **kwargs) -> BaseLLM:
         provider_key = provider.lower()
         if provider_key not in cls._registry:
             raise ValueError(f"Unknown provider '{provider}'. Available: {list(cls._registry.keys())}")

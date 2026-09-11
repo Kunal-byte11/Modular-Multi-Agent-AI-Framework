@@ -53,8 +53,9 @@ with st.sidebar:
 
     provider = st.selectbox(
         "Select LLM Provider",
-        options=["gemini", "groq", "nvidia", "mock"],
+        options=["openrouter", "gemini", "groq", "nvidia", "mock"],
         format_func=lambda x: {
+            "openrouter": "🌐 OpenRouter (Free Llama 3.3 70B)",
             "gemini": "✨ Google Gemini (2.5 Flash)",
             "groq": "⚡ Groq Cloud (Qwen 3.6 27B)",
             "nvidia": "🟢 NVIDIA NIM (Llama 3.2 11B)",
@@ -64,7 +65,12 @@ with st.sidebar:
 
     api_key_input = ""
     if provider != "mock":
-        env_map = {"groq": "GROQ_API_KEY", "nvidia": "NVIDIA_API_KEY", "gemini": "GEMINI_API_KEY"}
+        env_map = {
+            "openrouter": "OPENROUTER_API_KEY",
+            "groq": "GROQ_API_KEY",
+            "nvidia": "NVIDIA_API_KEY",
+            "gemini": "GEMINI_API_KEY"
+        }
         existing_key = os.getenv(env_map[provider], "")
         api_key_input = st.text_input(
             f"Enter {provider.upper()} API Key",
@@ -139,7 +145,6 @@ with col2:
 
 def extract_subtasks(goal: str):
     """Dynamically parses the user goal into specialist tasks."""
-    # 1. Sector task
     sector = "auto"
     for s in ["banking", "it", "pharma", "auto"]:
         if s in goal.lower():
@@ -147,14 +152,11 @@ def extract_subtasks(goal: str):
             break
     task1 = f"Screen the {sector} sector for top picks."
 
-    # 2. Tax task
-    # Find amount
     amt_match = re.search(r"(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:profit|gain|inr|rs|₹)", goal, re.IGNORECASE)
     amt = "80000"
     if amt_match:
         amt = amt_match.group(1).replace(",", "")
     
-    # Find months
     m_match = re.search(r"(\d+)\s*(?:month|yr|year|m)", goal, re.IGNORECASE)
     months = "18"
     if m_match:
