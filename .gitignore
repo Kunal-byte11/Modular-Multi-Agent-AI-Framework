@@ -1,0 +1,14 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Environment & API Keys (NEVER COMMIT)
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/

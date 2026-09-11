@@ -2,13 +2,47 @@
 core/base_llm.py
 -----------------
 LLM Provider Abstraction, Factory Pattern, and Token Telemetry Context Manager.
-Supports MockLLM (zero-cost testing), Gemini, and OpenAI.
+Supports:
+- MockLLM (zero-cost testing)
+- GroqLLM (Ultra-fast Llama-3.3-70B)
+- NvidiaLLM (NVIDIA NIM Llama-3.1-70B)
+- GeminiLLM (Google Gemini 1.5/2.0 Flash)
+Zero external dependencies (uses standard library urllib.request + json).
 """
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
+import os
+import json
+import urllib.request
+import urllib.error
 from core.base_memory import Message
-import time
+
+
+def load_env_file(filepath: str = ".env") -> None:
+    """
+    Lightweight zero-dependency .env loader.
+    Safely reads KEY=VALUE pairs into os.environ.
+    """
+    if not os.path.exists(filepath):
+        # Look in parent directories if running from subfolder
+        parent_env = os.path.join("..", filepath)
+        if os.path.exists(parent_env):
+            filepath = parent_env
+        else:
+            return
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            os.environ.setdefault(key.strip(), val.strip().strip("'\""))
+
+
+# Auto-load .env upon import
+load_env_file()
 
 
 class TokenCostTracker:
@@ -29,7 +63,6 @@ class TokenCostTracker:
         return (self.total_tokens / 1000.0) * self.cost_per_1k
 
     def record_usage(self, prompt_text: str, response_text: str) -> None:
-        # Approximate: ~4 chars per token
         self.prompt_tokens += max(1, len(prompt_text) // 4)
         self.completion_tokens += max(1, len(response_text) // 4)
 
@@ -46,9 +79,10 @@ class BaseLLM(ABC):
     """
     Abstract Base Class for LLM Providers.
     """
-    def __init__(self, model_name: str, temperature: float = 0.7):
+    def __init__(self, model_name: str, temperature: float = 0.7, api_key: Optional[str] = None):
         self.model_name = model_name
         self.temperature = temperature
+        self.api_key = api_key
 
     @abstractmethod
     def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -69,7 +103,6 @@ class MockLLM(BaseLLM):
         self._canned_responses: Dict[str, str] = {}
 
     def register_response(self, keyword: str, response: str) -> None:
-        """Register specific responses when prompt contains `keyword`."""
         self._canned_responses[keyword.lower()] = response
 
     def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -89,12 +122,130 @@ class MockLLM(BaseLLM):
         return f"Mock response to: '{last_user_msg[:30]}...'"
 
 
+class GroqLLM(BaseLLM):
+    """
+    Groq Cloud API Provider (Zero Dependency).
+    Default Model: llama-3.3-70b-versatile
+    """
+    def __init__(self, model_name: str = "llama-3.3-70b-versatile", api_key: Optional[str] = None, temperature: float = 0.6):
+        key = api_key or os.getenv("GROQ_API_KEY")
+        super().__init__(model_name=model_name, temperature=temperature, api_key=key)
+
+    def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
+        if not self.api_key:
+            raise ValueError("GROQ_API_KEY is missing! Set it in your .env file.")
+
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        
+        payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
+        payload = {
+            "model": self.model_name,
+            "messages": payload_messages,
+            "temperature": self.temperature
+        }
+
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode("utf-8")
+            raise RuntimeError(f"Groq API Error ({e.code}): {err_msg}")
+
+
+class NvidiaLLM(BaseLLM):
+    """
+    NVIDIA NIM API Provider (Zero Dependency).
+    Default Model: meta/llama-3.1-70b-instruct
+    """
+    def __init__(self, model_name: str = "meta/llama-3.1-70b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
+        key = api_key or os.getenv("NVIDIA_API_KEY")
+        super().__init__(model_name=model_name, temperature=temperature, api_key=key)
+
+    def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
+        if not self.api_key:
+            raise ValueError("NVIDIA_API_KEY is missing! Set it in your .env file.")
+
+        url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        
+        payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
+        payload = {
+            "model": self.model_name,
+            "messages": payload_messages,
+            "temperature": self.temperature,
+            "max_tokens": 1024
+        }
+
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode("utf-8")
+            raise RuntimeError(f"NVIDIA NIM API Error ({e.code}): {err_msg}")
+
+
+class GeminiLLM(BaseLLM):
+    """
+    Google Gemini REST API Provider (Zero Dependency).
+    Default Model: gemini-1.5-flash
+    """
+    def __init__(self, model_name: str = "gemini-1.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
+        key = api_key or os.getenv("GEMINI_API_KEY")
+        super().__init__(model_name=model_name, temperature=temperature, api_key=key)
+
+    def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY is missing! Set it in your .env file.")
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
+        headers = {"Content-Type": "application/json"}
+
+        # Combine messages for Gemini contents format
+        contents = []
+        for m in messages:
+            role = "user" if m.role in ("user", "tool") else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": m.content}]
+            })
+
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": self.temperature
+            }
+        }
+
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode("utf-8")
+            raise RuntimeError(f"Gemini API Error ({e.code}): {err_msg}")
+
+
 class LLMFactory:
     """
     Factory Pattern class to dynamically create LLM instances.
     """
     _registry = {
-        "mock": MockLLM
+        "mock": MockLLM,
+        "groq": GroqLLM,
+        "nvidia": NvidiaLLM,
+        "gemini": GeminiLLM
     }
 
     @classmethod
@@ -105,7 +256,7 @@ class LLMFactory:
     def create(cls, provider: str = "mock", model_name: Optional[str] = None, **kwargs) -> BaseLLM:
         provider_key = provider.lower()
         if provider_key not in cls._registry:
-            raise ValueError(f"Unknown provider '{provider}'. Available providers: {list(cls._registry.keys())}")
+            raise ValueError(f"Unknown provider '{provider}'. Available: {list(cls._registry.keys())}")
         
         target_cls = cls._registry[provider_key]
         if model_name:
