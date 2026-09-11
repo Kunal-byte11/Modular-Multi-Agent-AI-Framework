@@ -1,18 +1,16 @@
 """
 core/base_llm.py
 -----------------
-Verified, Active Multi-Provider LLM Abstraction.
-All models verified live with real API probes:
-- Groq: qwen/qwen3.6-27b, openai/gpt-oss-20b
-- NVIDIA NIM: meta/llama-3.2-11b-vision-instruct, mistralai/mistral-large
-- Google Gemini: gemini-2.5-flash, gemini-flash-latest
-- Mock: Deterministic zero-cost local testing
+Verified Multi-Provider LLM Abstraction with Smart 429 Rate-Limit Auto-Retry.
+Automatically handles Free-Tier rate limits (OTPM / RPM) by pausing and retrying.
 """
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 import os
 import json
+import time
+import re
 import urllib.request
 import urllib.error
 from core.base_memory import Message
@@ -106,7 +104,7 @@ class MockLLM(BaseLLM):
 class GroqLLM(BaseLLM):
     """
     Groq Cloud API Provider.
-    Verified Active: qwen/qwen3.6-27b
+    Auto-retries with backoff on 429 rate limits.
     """
     def __init__(self, model_name: str = "qwen/qwen3.6-27b", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("GROQ_API_KEY")
@@ -124,40 +122,47 @@ class GroqLLM(BaseLLM):
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        models_to_try = [self.model_name, "qwen/qwen3.6-27b", "openai/gpt-oss-20b"]
+        payload = {
+            "model": self.model_name,
+            "messages": payload_messages,
+            "temperature": self.temperature,
+            "max_tokens": 300
+        }
 
-        last_err = None
-        for model in models_to_try:
-            payload = {
-                "model": model,
-                "messages": payload_messages,
-                "temperature": self.temperature
-            }
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+
+        for attempt in range(4):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     text = data["choices"][0]["message"]["content"]
-                    # Clean out deepseek/qwen thinking tags if present
                     if "</think>" in text:
                         text = text.split("</think>")[-1].strip()
                     return text
             except urllib.error.HTTPError as e:
-                last_err = e.read().decode("utf-8", errors="ignore")
-                if e.code in (400, 404, 410):
+                err_msg = e.read().decode("utf-8", errors="ignore")
+                if e.code == 429 and attempt < 3:
+                    # Parse retry delay if provided
+                    wait_sec = 4.0
+                    delay_match = re.search(r"try again in ([\d\.]+)s", err_msg)
+                    if delay_match:
+                        wait_sec = float(delay_match.group(1)) + 1.0
+                    print(f"⏳ [Groq Rate Limit] Pausing {wait_sec:.1f}s for quota window...")
+                    time.sleep(wait_sec)
                     continue
-                raise RuntimeError(f"Groq API Error ({e.code}): {last_err}")
+                raise RuntimeError(f"Groq API Error ({e.code}): {err_msg}")
             except Exception as ex:
-                last_err = str(ex)
-                continue
+                if attempt < 3:
+                    time.sleep(2.0)
+                    continue
+                raise RuntimeError(f"Groq Request Failed: {str(ex)}")
 
-        raise RuntimeError(f"Groq Request Failed: {last_err}")
+        raise RuntimeError("Groq Request Failed after retries.")
 
 
 class NvidiaLLM(BaseLLM):
     """
     NVIDIA NIM API Provider.
-    Verified Active: meta/llama-3.2-11b-vision-instruct
     """
     def __init__(self, model_name: str = "meta/llama-3.2-11b-vision-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("NVIDIA_API_KEY")
@@ -175,37 +180,37 @@ class NvidiaLLM(BaseLLM):
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        models_to_try = [self.model_name, "meta/llama-3.2-11b-vision-instruct", "mistralai/mistral-large"]
+        payload = {
+            "model": self.model_name,
+            "messages": payload_messages,
+            "temperature": self.temperature,
+            "max_tokens": 400
+        }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
 
-        last_err = None
-        for model in models_to_try:
-            payload = {
-                "model": model,
-                "messages": payload_messages,
-                "temperature": self.temperature,
-                "max_tokens": 1024
-            }
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        for attempt in range(4):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     return data["choices"][0]["message"]["content"]
             except urllib.error.HTTPError as e:
-                last_err = e.read().decode("utf-8", errors="ignore")
-                if e.code in (400, 404, 410):
+                err_msg = e.read().decode("utf-8", errors="ignore")
+                if e.code == 429 and attempt < 3:
+                    time.sleep(4.0)
                     continue
-                raise RuntimeError(f"NVIDIA NIM API Error ({e.code}): {last_err}")
+                raise RuntimeError(f"NVIDIA NIM API Error ({e.code}): {err_msg}")
             except Exception as ex:
-                last_err = str(ex)
-                continue
+                if attempt < 3:
+                    time.sleep(2.0)
+                    continue
+                raise RuntimeError(f"NVIDIA NIM Request Failed: {str(ex)}")
 
-        raise RuntimeError(f"NVIDIA NIM Request Failed: {last_err}")
+        raise RuntimeError("NVIDIA NIM Request Failed.")
 
 
 class GeminiLLM(BaseLLM):
     """
-    Google Gemini Provider.
-    Verified Active: gemini-2.5-flash
+    Google Gemini Provider with 429 Quota Backoff.
     """
     def __init__(self, model_name: str = "gemini-2.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
         key = api_key or os.getenv("GEMINI_API_KEY")
@@ -216,7 +221,7 @@ class GeminiLLM(BaseLLM):
             raise ValueError("GEMINI_API_KEY is missing! Set it in your .env or sidebar.")
 
         clean_model = self.model_name.replace("models/", "").strip()
-        models_to_try = [clean_model, "gemini-2.5-flash", "gemini-flash-latest"]
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={self.api_key.strip()}"
 
         contents = []
         for m in messages:
@@ -229,19 +234,17 @@ class GeminiLLM(BaseLLM):
         payload = {
             "contents": contents,
             "generationConfig": {
-                "temperature": self.temperature
+                "temperature": self.temperature,
+                "maxOutputTokens": 400
             }
         }
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
 
-        last_err = None
-        for model in models_to_try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key.strip()}"
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-
+        for attempt in range(4):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -250,15 +253,23 @@ class GeminiLLM(BaseLLM):
                         return "".join([p.get("text", "") for p in parts])
                     return "No response generated."
             except urllib.error.HTTPError as e:
-                last_err = e.read().decode("utf-8", errors="ignore")
-                if e.code in (400, 404, 410):
+                err_msg = e.read().decode("utf-8", errors="ignore")
+                if e.code == 429 and attempt < 3:
+                    wait_sec = 15.0
+                    delay_match = re.search(r"retry in ([\d\.]+)s", err_msg)
+                    if delay_match:
+                        wait_sec = float(delay_match.group(1)) + 1.0
+                    print(f"⏳ [Gemini Quota Delay] Free-tier limit reached. Pausing {wait_sec:.1f}s...")
+                    time.sleep(wait_sec)
                     continue
-                raise RuntimeError(f"Gemini API Error ({e.code}): {last_err}")
+                raise RuntimeError(f"Gemini API Error ({e.code}): {err_msg}")
             except Exception as ex:
-                last_err = str(ex)
-                continue
+                if attempt < 3:
+                    time.sleep(2.0)
+                    continue
+                raise RuntimeError(f"Gemini Request Failed: {str(ex)}")
 
-        raise RuntimeError(f"Gemini API Error: {last_err}")
+        raise RuntimeError("Gemini API Request Failed after quota retries.")
 
 
 class LLMFactory:
