@@ -2,14 +2,13 @@
 core/base_llm.py
 -----------------
 Robust LLM Provider Abstraction.
-Accurate endpoints, active 2026 model names, clean error diagnostics, and automatic retries.
+Active Groq, NVIDIA, and Gemini models with clean error handling.
 """
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 import os
 import json
-import time
 import urllib.request
 import urllib.error
 from core.base_memory import Message
@@ -103,9 +102,9 @@ class MockLLM(BaseLLM):
 class GroqLLM(BaseLLM):
     """
     Groq Cloud API Provider.
-    Uses standard browser User-Agent to bypass Cloudflare 1010 block.
+    Models: llama-3.1-8b-instant, llama-3.3-70b-versatile, qwen-2.5-32b
     """
-    def __init__(self, model_name: str = "llama-3.3-70b-versatile", api_key: Optional[str] = None, temperature: float = 0.6):
+    def __init__(self, model_name: str = "llama-3.1-8b-instant", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("GROQ_API_KEY")
         super().__init__(model_name=model_name, temperature=temperature, api_key=key)
 
@@ -116,13 +115,16 @@ class GroqLLM(BaseLLM):
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.api_key.strip()}",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        models_to_try = [self.model_name, "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
+        
+        # Only active, supported Groq production models
+        models_to_try = [self.model_name, "llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
 
+        last_err = None
         for model in models_to_try:
             payload = {
                 "model": model,
@@ -135,22 +137,23 @@ class GroqLLM(BaseLLM):
                     data = json.loads(resp.read().decode("utf-8"))
                     return data["choices"][0]["message"]["content"]
             except urllib.error.HTTPError as e:
-                err_msg = e.read().decode("utf-8", errors="ignore")
-                if model != models_to_try[-1] and e.code in (404, 410, 503):
-                    continue
-                raise RuntimeError(f"Groq API Error ({e.code}): {err_msg}")
+                last_err = e.read().decode("utf-8", errors="ignore")
+                if e.code in (400, 404, 410):
+                    continue  # Fallback to next active model
+                raise RuntimeError(f"Groq API Error ({e.code}): {last_err}")
             except Exception as ex:
-                raise RuntimeError(f"Groq Request Failed: {str(ex)}")
+                last_err = str(ex)
+                continue
 
-        raise RuntimeError("Groq request failed across all models.")
+        raise RuntimeError(f"Groq Request Failed: {last_err}")
 
 
 class NvidiaLLM(BaseLLM):
     """
     NVIDIA NIM API Provider.
-    Uses active, non-deprecated model endpoints.
+    Active models: meta/llama-3.3-70b-instruct, meta/llama-3.1-8b-instruct
     """
-    def __init__(self, model_name: str = "meta/llama-3.3-70b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
+    def __init__(self, model_name: str = "meta/llama-3.1-8b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("NVIDIA_API_KEY")
         super().__init__(model_name=model_name, temperature=temperature, api_key=key)
 
@@ -161,18 +164,14 @@ class NvidiaLLM(BaseLLM):
         url = "https://integrate.api.nvidia.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.api_key.strip()}",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        models_to_try = [
-            self.model_name,
-            "meta/llama-3.3-70b-instruct",
-            "meta/llama-3.1-8b-instruct",
-            "mistralai/mistral-large-2-instruct"
-        ]
+        models_to_try = [self.model_name, "meta/llama-3.1-8b-instruct", "meta/llama-3.3-70b-instruct"]
 
+        last_err = None
         for model in models_to_try:
             payload = {
                 "model": model,
@@ -186,22 +185,23 @@ class NvidiaLLM(BaseLLM):
                     data = json.loads(resp.read().decode("utf-8"))
                     return data["choices"][0]["message"]["content"]
             except urllib.error.HTTPError as e:
-                err_msg = e.read().decode("utf-8", errors="ignore")
-                if e.code in (404, 410) and model != models_to_try[-1]:
+                last_err = e.read().decode("utf-8", errors="ignore")
+                if e.code in (400, 404, 410):
                     continue
-                raise RuntimeError(f"NVIDIA NIM API Error ({e.code}): {err_msg}")
+                raise RuntimeError(f"NVIDIA NIM API Error ({e.code}): {last_err}")
             except Exception as ex:
-                raise RuntimeError(f"NVIDIA Request Failed: {str(ex)}")
+                last_err = str(ex)
+                continue
 
-        raise RuntimeError("NVIDIA NIM request failed.")
+        raise RuntimeError(f"NVIDIA NIM Request Failed: {last_err}")
 
 
 class GeminiLLM(BaseLLM):
     """
     Google Gemini Provider.
-    Queries the official Google AI Studio v1beta API with correct active model names.
+    Active models: gemini-1.5-flash, gemini-2.0-flash
     """
-    def __init__(self, model_name: str = "gemini-1.5-flash-latest", api_key: Optional[str] = None, temperature: float = 0.7):
+    def __init__(self, model_name: str = "gemini-1.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
         key = api_key or os.getenv("GEMINI_API_KEY")
         super().__init__(model_name=model_name, temperature=temperature, api_key=key)
 
@@ -209,16 +209,8 @@ class GeminiLLM(BaseLLM):
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is missing! Set it in your .env or sidebar.")
 
-        # Strip any prefix like 'models/' if passed by user
-        clean_model = self.model_name.replace("models/", "")
-        models_to_try = [
-            clean_model,
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-pro-latest",
-            "gemini-2.0-flash-exp",
-            "gemini-1.5-flash",
-            "gemini-pro"
-        ]
+        clean_model = self.model_name.replace("models/", "").strip()
+        models_to_try = [clean_model, "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
 
         contents = []
         for m in messages:
@@ -234,15 +226,14 @@ class GeminiLLM(BaseLLM):
                 "temperature": self.temperature
             }
         }
-
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
 
-        last_error = None
+        last_err = None
         for model in models_to_try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key.strip()}"
             req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
 
             try:
@@ -253,15 +244,15 @@ class GeminiLLM(BaseLLM):
                         return "".join([p.get("text", "") for p in parts])
                     return "No response generated."
             except urllib.error.HTTPError as e:
-                last_error = e.read().decode("utf-8", errors="ignore")
-                if e.code in (404, 503):
-                    continue  # Try next model candidate
-                raise RuntimeError(f"Gemini API Error ({e.code}): {last_error}")
+                last_err = e.read().decode("utf-8", errors="ignore")
+                if e.code in (400, 404, 410):
+                    continue
+                raise RuntimeError(f"Gemini API Error ({e.code}): {last_err}")
             except Exception as ex:
-                last_error = str(ex)
+                last_err = str(ex)
                 continue
 
-        raise RuntimeError(f"Gemini API Error: Could not connect with tested models. Details: {last_error}")
+        raise RuntimeError(f"Gemini API Error: {last_err}")
 
 
 class LLMFactory:
