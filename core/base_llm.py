@@ -2,30 +2,26 @@
 core/base_llm.py
 -----------------
 LLM Provider Abstraction, Factory Pattern, and Token Telemetry Context Manager.
+Includes automatic retries with exponential backoff & fallback models for 503/429 errors.
 Supports:
 - MockLLM (zero-cost testing)
-- GroqLLM (Ultra-fast Llama-3.3-70B)
-- NvidiaLLM (NVIDIA NIM Llama-3.1-70B)
-- GeminiLLM (Google Gemini 1.5/2.0 Flash)
-Zero external dependencies (uses standard library urllib.request + json).
+- GroqLLM (Ultra-fast Llama-3.3-70B / Llama-3.1-8B fallback)
+- NvidiaLLM (NVIDIA NIM Llama-3.1-70B / 8B fallback)
+- GeminiLLM (Google Gemini 1.5/2.0 Flash with auto-retry)
 """
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 import os
 import json
+import time
 import urllib.request
 import urllib.error
 from core.base_memory import Message
 
 
 def load_env_file(filepath: str = ".env") -> None:
-    """
-    Lightweight zero-dependency .env loader.
-    Safely reads KEY=VALUE pairs into os.environ.
-    """
     if not os.path.exists(filepath):
-        # Look in parent directories if running from subfolder
         parent_env = os.path.join("..", filepath)
         if os.path.exists(parent_env):
             filepath = parent_env
@@ -41,14 +37,10 @@ def load_env_file(filepath: str = ".env") -> None:
             os.environ.setdefault(key.strip(), val.strip().strip("'\""))
 
 
-# Auto-load .env upon import
 load_env_file()
 
 
 class TokenCostTracker:
-    """
-    Context Manager (__enter__, __exit__) to track token usage and cost in INR (₹).
-    """
     def __init__(self, cost_per_1k_tokens_inr: float = 0.15):
         self.cost_per_1k = cost_per_1k_tokens_inr
         self.prompt_tokens = 0
@@ -76,9 +68,6 @@ class TokenCostTracker:
 
 
 class BaseLLM(ABC):
-    """
-    Abstract Base Class for LLM Providers.
-    """
     def __init__(self, model_name: str, temperature: float = 0.7, api_key: Optional[str] = None):
         self.model_name = model_name
         self.temperature = temperature
@@ -86,7 +75,6 @@ class BaseLLM(ABC):
 
     @abstractmethod
     def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
-        """Takes a list of messages and returns the generated text response."""
         pass
 
     def __repr__(self) -> str:
@@ -94,9 +82,6 @@ class BaseLLM(ABC):
 
 
 class MockLLM(BaseLLM):
-    """
-    Deterministic Mock LLM for automated testing and ReAct loops without API keys.
-    """
     def __init__(self, model_name: str = "mock-gpt-4o", default_response: Optional[str] = None):
         super().__init__(model_name=model_name)
         self.default_response = default_response
@@ -124,8 +109,7 @@ class MockLLM(BaseLLM):
 
 class GroqLLM(BaseLLM):
     """
-    Groq Cloud API Provider (Zero Dependency).
-    Default Model: llama-3.3-70b-versatile
+    Groq Cloud API Provider with auto-retry and fast fallback.
     """
     def __init__(self, model_name: str = "llama-3.3-70b-versatile", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("GROQ_API_KEY")
@@ -133,35 +117,52 @@ class GroqLLM(BaseLLM):
 
     def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
         if not self.api_key:
-            raise ValueError("GROQ_API_KEY is missing! Set it in your .env file.")
+            raise ValueError("GROQ_API_KEY is missing! Set it in your .env or sidebar.")
 
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "ModularAgentFramework/1.0"
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        payload = {
-            "model": self.model_name,
-            "messages": payload_messages,
-            "temperature": self.temperature
-        }
+        
+        models_to_try = [self.model_name, "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
 
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as e:
-            err_msg = e.read().decode("utf-8")
-            raise RuntimeError(f"Groq API Error ({e.code}): {err_msg}")
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": payload_messages,
+                "temperature": self.temperature
+            }
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+
+            for attempt in range(3):
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        return data["choices"][0]["message"]["content"]
+                except urllib.error.HTTPError as e:
+                    if e.code in (503, 429, 500) and attempt < 2:
+                        time.sleep(1.5 * (attempt + 1))
+                        continue
+                    if model != models_to_try[-1]:
+                        break  # Try next fallback model
+                    err_msg = e.read().decode("utf-8")
+                    raise RuntimeError(f"Groq API Error ({e.code}): {err_msg}")
+                except Exception as ex:
+                    if attempt < 2:
+                        time.sleep(1.0)
+                        continue
+                    raise RuntimeError(f"Groq Request Failed: {str(ex)}")
+
+        raise RuntimeError("Groq service temporarily unavailable after fallback retries.")
 
 
 class NvidiaLLM(BaseLLM):
     """
-    NVIDIA NIM API Provider (Zero Dependency).
-    Default Model: meta/llama-3.1-70b-instruct
+    NVIDIA NIM API Provider with auto-retry.
     """
     def __init__(self, model_name: str = "meta/llama-3.1-70b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("NVIDIA_API_KEY")
@@ -169,36 +170,52 @@ class NvidiaLLM(BaseLLM):
 
     def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
         if not self.api_key:
-            raise ValueError("NVIDIA_API_KEY is missing! Set it in your .env file.")
+            raise ValueError("NVIDIA_API_KEY is missing! Set it in your .env or sidebar.")
 
         url = "https://integrate.api.nvidia.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": "ModularAgentFramework/1.0"
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        payload = {
-            "model": self.model_name,
-            "messages": payload_messages,
-            "temperature": self.temperature,
-            "max_tokens": 1024
-        }
+        models_to_try = [self.model_name, "meta/llama-3.1-8b-instruct", "mistralai/mixtral-8x7b-instruct-v0.1"]
 
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as e:
-            err_msg = e.read().decode("utf-8")
-            raise RuntimeError(f"NVIDIA NIM API Error ({e.code}): {err_msg}")
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": payload_messages,
+                "temperature": self.temperature,
+                "max_tokens": 1024
+            }
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+
+            for attempt in range(3):
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        return data["choices"][0]["message"]["content"]
+                except urllib.error.HTTPError as e:
+                    if e.code in (503, 429, 500) and attempt < 2:
+                        time.sleep(1.5 * (attempt + 1))
+                        continue
+                    if model != models_to_try[-1]:
+                        break
+                    err_msg = e.read().decode("utf-8")
+                    raise RuntimeError(f"NVIDIA NIM API Error ({e.code}): {err_msg}")
+                except Exception as ex:
+                    if attempt < 2:
+                        time.sleep(1.0)
+                        continue
+                    raise RuntimeError(f"NVIDIA Request Failed: {str(ex)}")
+
+        raise RuntimeError("NVIDIA NIM service temporarily unavailable.")
 
 
 class GeminiLLM(BaseLLM):
     """
-    Google Gemini REST API Provider (Zero Dependency).
-    Default Model: gemini-1.5-flash
+    Google Gemini Provider with auto-retry and multi-model fallback.
     """
     def __init__(self, model_name: str = "gemini-1.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
         key = api_key or os.getenv("GEMINI_API_KEY")
@@ -206,12 +223,11 @@ class GeminiLLM(BaseLLM):
 
     def generate(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> str:
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY is missing! Set it in your .env file.")
+            raise ValueError("GEMINI_API_KEY is missing! Set it in your .env or sidebar.")
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
-        headers = {"Content-Type": "application/json"}
+        models_to_try = [self.model_name, "gemini-1.5-flash-latest", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
+        headers = {"Content-Type": "application/json", "User-Agent": "ModularAgentFramework/1.0"}
 
-        # Combine messages for Gemini contents format
         contents = []
         for m in messages:
             role = "user" if m.role in ("user", "tool") else "model"
@@ -227,20 +243,36 @@ class GeminiLLM(BaseLLM):
             }
         }
 
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-        except urllib.error.HTTPError as e:
-            err_msg = e.read().decode("utf-8")
-            raise RuntimeError(f"Gemini API Error ({e.code}): {err_msg}")
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+
+            for attempt in range(3):
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        if "candidates" in data and len(data["candidates"]) > 0:
+                            parts = data["candidates"][0]["content"]["parts"]
+                            return "".join([p.get("text", "") for p in parts])
+                        return "No response generated."
+                except urllib.error.HTTPError as e:
+                    if e.code in (503, 429, 500) and attempt < 2:
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    if model != models_to_try[-1]:
+                        break  # Fallback to next Gemini model
+                    err_msg = e.read().decode("utf-8")
+                    raise RuntimeError(f"Gemini API Error ({e.code}): Model overloaded or temporary issue. {err_msg}")
+                except Exception as ex:
+                    if attempt < 2:
+                        time.sleep(1.0)
+                        continue
+                    raise RuntimeError(f"Gemini Request Failed: {str(ex)}")
+
+        raise RuntimeError("Google Gemini servers temporarily busy (503). Try switching to Groq or Mock LLM.")
 
 
 class LLMFactory:
-    """
-    Factory Pattern class to dynamically create LLM instances.
-    """
     _registry = {
         "mock": MockLLM,
         "groq": GroqLLM,
