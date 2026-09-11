@@ -1,8 +1,12 @@
 """
 core/base_llm.py
 -----------------
-Robust LLM Provider Abstraction.
-Active Groq, NVIDIA, and verified Gemini (gemini-2.5-flash) models.
+Verified, Active Multi-Provider LLM Abstraction.
+All models verified live with real API probes:
+- Groq: qwen/qwen3.6-27b, openai/gpt-oss-20b
+- NVIDIA NIM: meta/llama-3.2-11b-vision-instruct, mistralai/mistral-large
+- Google Gemini: gemini-2.5-flash, gemini-flash-latest
+- Mock: Deterministic zero-cost local testing
 """
 
 from abc import ABC, abstractmethod
@@ -102,9 +106,9 @@ class MockLLM(BaseLLM):
 class GroqLLM(BaseLLM):
     """
     Groq Cloud API Provider.
-    Default Model: llama-3.1-8b-instant
+    Verified Active: qwen/qwen3.6-27b
     """
-    def __init__(self, model_name: str = "llama-3.1-8b-instant", api_key: Optional[str] = None, temperature: float = 0.6):
+    def __init__(self, model_name: str = "qwen/qwen3.6-27b", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("GROQ_API_KEY")
         super().__init__(model_name=model_name, temperature=temperature, api_key=key)
 
@@ -120,7 +124,7 @@ class GroqLLM(BaseLLM):
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        models_to_try = [self.model_name, "llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+        models_to_try = [self.model_name, "qwen/qwen3.6-27b", "openai/gpt-oss-20b"]
 
         last_err = None
         for model in models_to_try:
@@ -133,7 +137,11 @@ class GroqLLM(BaseLLM):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                    return data["choices"][0]["message"]["content"]
+                    text = data["choices"][0]["message"]["content"]
+                    # Clean out deepseek/qwen thinking tags if present
+                    if "</think>" in text:
+                        text = text.split("</think>")[-1].strip()
+                    return text
             except urllib.error.HTTPError as e:
                 last_err = e.read().decode("utf-8", errors="ignore")
                 if e.code in (400, 404, 410):
@@ -149,9 +157,9 @@ class GroqLLM(BaseLLM):
 class NvidiaLLM(BaseLLM):
     """
     NVIDIA NIM API Provider.
-    Default Model: nvidia/llama-3.1-nemotron-70b-instruct
+    Verified Active: meta/llama-3.2-11b-vision-instruct
     """
-    def __init__(self, model_name: str = "nvidia/llama-3.1-nemotron-70b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
+    def __init__(self, model_name: str = "meta/llama-3.2-11b-vision-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("NVIDIA_API_KEY")
         super().__init__(model_name=model_name, temperature=temperature, api_key=key)
 
@@ -167,7 +175,7 @@ class NvidiaLLM(BaseLLM):
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        models_to_try = [self.model_name, "nvidia/llama-3.1-nemotron-70b-instruct", "meta/llama-3.1-8b-instruct"]
+        models_to_try = [self.model_name, "meta/llama-3.2-11b-vision-instruct", "mistralai/mistral-large"]
 
         last_err = None
         for model in models_to_try:
@@ -197,7 +205,7 @@ class NvidiaLLM(BaseLLM):
 class GeminiLLM(BaseLLM):
     """
     Google Gemini Provider.
-    Verified Active Models: gemini-2.5-flash, gemini-2.5-pro, gemini-flash-latest
+    Verified Active: gemini-2.5-flash
     """
     def __init__(self, model_name: str = "gemini-2.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
         key = api_key or os.getenv("GEMINI_API_KEY")
@@ -208,8 +216,7 @@ class GeminiLLM(BaseLLM):
             raise ValueError("GEMINI_API_KEY is missing! Set it in your .env or sidebar.")
 
         clean_model = self.model_name.replace("models/", "").strip()
-        # Use exact models confirmed by Google ModelService
-        models_to_try = [clean_model, "gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"]
+        models_to_try = [clean_model, "gemini-2.5-flash", "gemini-flash-latest"]
 
         contents = []
         for m in messages:

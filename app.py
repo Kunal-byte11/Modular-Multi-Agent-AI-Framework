@@ -7,7 +7,6 @@ Deployable on Streamlit Community Cloud (100% Free Forever).
 
 import streamlit as st
 import os
-import time
 
 from core.base_tool import tool
 from core.base_memory import SlidingWindowMemory
@@ -53,12 +52,12 @@ with st.sidebar:
 
     provider = st.selectbox(
         "Select LLM Provider",
-        options=["groq", "mock", "gemini", "nvidia"],
+        options=["gemini", "groq", "nvidia", "mock"],
         format_func=lambda x: {
-            "groq": "⚡ Groq (Llama-3.1-8B Instant)",
-            "mock": "🧪 Mock LLM (Zero-Cost Simulator)",
             "gemini": "✨ Google Gemini (2.5 Flash)",
-            "nvidia": "🟢 NVIDIA NIM (Nemotron 70B / Llama 8B)"
+            "groq": "⚡ Groq Cloud (Qwen 3.6 27B)",
+            "nvidia": "🟢 NVIDIA NIM (Llama 3.2 11B)",
+            "mock": "🧪 Mock LLM (Zero-Cost Simulator)"
         }[x]
     )
 
