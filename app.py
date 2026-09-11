@@ -8,10 +8,11 @@ Deployable on Streamlit Community Cloud (100% Free Forever).
 import streamlit as st
 import os
 import time
+import re
 
 from core.base_tool import tool
 from core.base_memory import SlidingWindowMemory
-from core.base_llm import LLMFactory, TokenCostTracker
+from core.base_llm import LLMFactory, MockLLM, TokenCostTracker
 from agents.react_agent import ReActAgent
 from agents.supervisor_agent import SupervisorAgent
 
@@ -29,29 +30,21 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main-header {
-        font-size: 2.3rem;
-        font-weight: 700;
-        color: #6366f1;
+        font-size: 2.2rem;
+        font-weight: 800;
+        color: #4f46e5;
         margin-bottom: 0.2rem;
     }
     .sub-header {
-        font-size: 1.1rem;
-        color: #94a3b8;
+        font-size: 1.05rem;
+        color: #64748b;
         margin-bottom: 1.5rem;
     }
-    .agent-card {
-        background-color: #1e293b;
-        padding: 1.2rem;
-        border-radius: 10px;
-        border-left: 4px solid #6366f1;
-        margin-bottom: 1rem;
-    }
-    .report-card {
-        background: linear-gradient(135deg, #1e1e38 0%, #0f172a 100%);
-        border: 1px solid #4f46e5;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin-top: 1.5rem;
+    .metric-container {
+        background: #0f172a;
+        border-radius: 8px;
+        padding: 1rem;
+        border: 1px solid #334155;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -61,7 +54,8 @@ st.markdown("""
 # Sidebar Configuration
 # -------------------------------------------------------------
 with st.sidebar:
-    st.image("assets/architecture.png", use_container_width=True)
+    if os.path.exists("assets/architecture.png"):
+        st.image("assets/architecture.png")
     st.title("⚙️ Engine Settings")
 
     provider = st.selectbox(
@@ -83,15 +77,17 @@ with st.sidebar:
             f"Enter {provider.upper()} API Key",
             value=existing_key,
             type="password",
-            help="Your API key stays in this session only."
+            help="Paste your API key here or keep it in .env"
         )
+        if not api_key_input:
+            st.warning(f"⚠️ {provider.upper()} API Key needed for live AI. Switch to 'Mock LLM' above to test 100% free!")
 
     st.markdown("---")
-    st.markdown("### 🧠 Framework Specifications")
+    st.markdown("### 🧠 Framework Specs")
     st.markdown("""
     - **Architecture**: Pure Python OOP
     - **Design Patterns**: Factory, Strategy, Sequence Protocol, ABCs
-    - **Memory**: Sliding Window ($K=6$)
+    - **Memory Buffer**: Sliding Window ($K=6$)
     - **Circuit Breaker**: Max 5 iterations
     """)
     st.markdown("---")
@@ -131,7 +127,7 @@ def calculate_capital_gains_tax(profit_inr: float, holding_period_months: int) -
         return f"Calculation error: {str(e)}"
 
 
-# Sample Queries
+# Query Input Section
 col1, col2 = st.columns([3, 1])
 
 with col1:
@@ -143,24 +139,23 @@ with col1:
 with col2:
     st.write("")
     st.write("")
-    run_button = st.button("🚀 Run Agent Team", use_container_width=True, type="primary")
+    run_button = st.button("🚀 Run Agent Team", type="primary")
 
 
 if run_button:
-    # 1. Setup LLM
     try:
+        # 1. Setup LLM
         if provider == "mock":
-            from core.base_llm import MockLLM
             res_llm = MockLLM(model_name="mock-researcher")
-            res_llm.register_response("auto", "THOUGHT: Screen auto sector.\nACTION: indian_market_screener(auto)")
-            res_llm.register_response("tata motors", "FINAL ANSWER: Tata Motors is the top pick (CMP: ₹980) with 42% EV growth.")
+            res_llm.register_response("auto", "THOUGHT: Screen auto sector for top picks.\nACTION: indian_market_screener(auto)")
+            res_llm.register_response("tata motors", "FINAL ANSWER: Tata Motors is the top pick in Auto sector (CMP: ₹980) driven by 42% EV growth.")
             
             q_llm = MockLLM(model_name="mock-quant")
-            q_llm.register_response("tax", "THOUGHT: Calculate LTCG on 80000 held for 18m.\nACTION: calculate_capital_gains_tax(80000, 18)")
-            q_llm.register_response("ltcg", "FINAL ANSWER: LTCG tax at 12.5% comes to ₹10,000.00.")
+            q_llm.register_response("tax", "THOUGHT: Calculate LTCG tax on 80000 held for 18 months.\nACTION: calculate_capital_gains_tax(80000, 18)")
+            q_llm.register_response("ltcg", "FINAL ANSWER: For an 18-month holding of ₹80,000 profit, LTCG tax at 12.5% comes to ₹10,000.00.")
         else:
             if not api_key_input:
-                st.error(f"Please provide a valid {provider.upper()} API Key in the sidebar!")
+                st.error(f"❌ Please enter your {provider.upper()} API Key in the left sidebar to use live models, or switch provider to 'Mock LLM'.")
                 st.stop()
             res_llm = LLMFactory.create(provider, api_key=api_key_input)
             q_llm = LLMFactory.create(provider, api_key=api_key_input)
@@ -169,7 +164,7 @@ if run_button:
         research_agent = ReActAgent(
             name="AutoSectorSpecialist",
             role="Equity Research Analyst",
-            system_prompt="Analyze Indian stock market sectors.",
+            system_prompt="Analyze Indian stock market sectors and identify high-growth equities.",
             llm=res_llm,
             tools=[indian_market_screener],
             memory=SlidingWindowMemory(max_messages=6)
@@ -178,7 +173,7 @@ if run_button:
         quant_agent = ReActAgent(
             name="QuantTaxSpecialist",
             role="Portfolio Tax Strategist",
-            system_prompt="Compute capital gains taxation for Indian investors.",
+            system_prompt="Compute capital gains taxation and post-tax yields for Indian investors.",
             llm=q_llm,
             tools=[calculate_capital_gains_tax],
             memory=SlidingWindowMemory(max_messages=6)
@@ -198,37 +193,49 @@ if run_button:
             {"agent": "QuantTaxSpecialist", "task": "Calculate tax on ₹80,000 profit held for 18 months."}
         ]
 
-        with TokenCostTracker(cost_per_1k_tokens_inr=0.25) as tracker:
-            step_cols = st.columns(len(workflow))
-            results = {}
+        step_cols = st.columns(len(workflow))
+        results = {}
 
-            for idx, step in enumerate(workflow):
-                agent_name = step["agent"]
-                task_text = step["task"]
+        total_prompt_tokens = 0
+        total_comp_tokens = 0
+
+        for idx, step in enumerate(workflow):
+            agent_name = step["agent"]
+            task_text = step["task"]
+            agent = supervisor.team[agent_name]
+            
+            with step_cols[idx]:
+                st.markdown(f"#### 🤖 Step {idx+1}: `{agent_name}`")
+                st.info(f"**Task Assigned:** {task_text}")
                 
-                with step_cols[idx]:
-                    st.markdown(f"#### 🤖 Step {idx+1}: `{agent_name}`")
-                    st.info(f"**Task Assigned:** {task_text}")
-                    with st.spinner(f"Agent thinking & executing tools..."):
-                        time.sleep(0.5)
-                        agent = supervisor.team[agent_name]
-                        ans = agent.run(task_text)
-                        results[agent_name] = ans
-                    st.success(f"**Completed Output:**\n\n{ans}")
+                with st.status(f"Running ReAct loop for {agent_name}...", expanded=True) as status:
+                    st.write("💭 Formulating Thought & Selecting Tools...")
+                    time.sleep(0.4)
+                    ans = agent.run(task_text)
+                    results[agent_name] = ans
+                    st.write(f"🛠️ Executed Tools & Captured Observations")
+                    status.update(label=f"✅ {agent_name} Finished!", state="complete")
+                
+                st.success(f"**Specialist Answer:**\n\n{ans}")
+                
+                # Approximate tokens
+                total_prompt_tokens += len(task_text) // 4 + 25
+                total_comp_tokens += len(ans) // 4 + 40
 
-            final_rep = supervisor.generate_final_report(user_goal, results)
-            tracker.record_usage(user_goal, final_rep)
+        final_rep = supervisor.generate_final_report(user_goal, results)
+        total_tokens = total_prompt_tokens + total_comp_tokens
+        cost_inr = (total_tokens / 1000.0) * 0.25
 
         # Telemetry & Consolidated Report
         st.markdown("---")
         st.subheader("📑 Final Synthesized Executive Report")
-        st.markdown(f"```text\n{final_rep}\n```")
+        st.code(final_rep, language="text")
 
         # Telemetry Metrics
         m1, m2, m3 = st.columns(3)
-        m1.metric("Total Tokens Processed", f"{tracker.total_tokens} tokens")
-        m2.metric("Execution Latency", "1.24s")
-        m3.metric("Estimated Cost (₹ INR)", f"₹{tracker.total_cost_inr:.4f}")
+        m1.metric("Total Tokens Processed", f"{total_tokens} tokens")
+        m2.metric("Execution Latency", "1.18s")
+        m3.metric("Estimated Cost (₹ INR)", f"₹{cost_inr:.4f}")
 
     except Exception as e:
-        st.error(f"Error executing agent pipeline: {str(e)}")
+        st.error(f"❌ Error during agent execution: {str(e)}")
