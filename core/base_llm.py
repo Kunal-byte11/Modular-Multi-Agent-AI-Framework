@@ -2,7 +2,7 @@
 core/base_llm.py
 -----------------
 Robust LLM Provider Abstraction.
-Active Groq, NVIDIA, and Gemini models with clean error handling.
+Active Groq, NVIDIA, and verified Gemini (gemini-2.5-flash) models.
 """
 
 from abc import ABC, abstractmethod
@@ -102,7 +102,7 @@ class MockLLM(BaseLLM):
 class GroqLLM(BaseLLM):
     """
     Groq Cloud API Provider.
-    Primary Model: llama-3.1-8b-instant (Fastest, High Free-Tier limits)
+    Default Model: llama-3.1-8b-instant
     """
     def __init__(self, model_name: str = "llama-3.1-8b-instant", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("GROQ_API_KEY")
@@ -149,7 +149,7 @@ class GroqLLM(BaseLLM):
 class NvidiaLLM(BaseLLM):
     """
     NVIDIA NIM API Provider.
-    Primary Model: nvidia/llama-3.1-nemotron-70b-instruct
+    Default Model: nvidia/llama-3.1-nemotron-70b-instruct
     """
     def __init__(self, model_name: str = "nvidia/llama-3.1-nemotron-70b-instruct", api_key: Optional[str] = None, temperature: float = 0.6):
         key = api_key or os.getenv("NVIDIA_API_KEY")
@@ -167,12 +167,7 @@ class NvidiaLLM(BaseLLM):
         }
         
         payload_messages = [{"role": m.role if m.role != "tool" else "user", "content": m.content} for m in messages]
-        # Active NVIDIA hosted function models
-        models_to_try = [
-            self.model_name,
-            "nvidia/llama-3.1-nemotron-70b-instruct",
-            "meta/llama-3.1-8b-instruct"
-        ]
+        models_to_try = [self.model_name, "nvidia/llama-3.1-nemotron-70b-instruct", "meta/llama-3.1-8b-instruct"]
 
         last_err = None
         for model in models_to_try:
@@ -202,9 +197,9 @@ class NvidiaLLM(BaseLLM):
 class GeminiLLM(BaseLLM):
     """
     Google Gemini Provider.
-    Primary Model: gemini-1.5-flash
+    Verified Active Models: gemini-2.5-flash, gemini-2.5-pro, gemini-flash-latest
     """
-    def __init__(self, model_name: str = "gemini-1.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
+    def __init__(self, model_name: str = "gemini-2.5-flash", api_key: Optional[str] = None, temperature: float = 0.7):
         key = api_key or os.getenv("GEMINI_API_KEY")
         super().__init__(model_name=model_name, temperature=temperature, api_key=key)
 
@@ -213,7 +208,8 @@ class GeminiLLM(BaseLLM):
             raise ValueError("GEMINI_API_KEY is missing! Set it in your .env or sidebar.")
 
         clean_model = self.model_name.replace("models/", "").strip()
-        models_to_try = [clean_model, "gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+        # Use exact models confirmed by Google ModelService
+        models_to_try = [clean_model, "gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-pro"]
 
         contents = []
         for m in messages:

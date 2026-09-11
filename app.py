@@ -57,7 +57,7 @@ with st.sidebar:
         format_func=lambda x: {
             "groq": "⚡ Groq (Llama-3.1-8B Instant)",
             "mock": "🧪 Mock LLM (Zero-Cost Simulator)",
-            "gemini": "✨ Google Gemini (1.5 Flash)",
+            "gemini": "✨ Google Gemini (2.5 Flash)",
             "nvidia": "🟢 NVIDIA NIM (Nemotron 70B / Llama 8B)"
         }[x]
     )
