@@ -38,6 +38,10 @@ This repository is a fully transparent, modular reference implementation that an
 
 ## 🏗️ System Architecture
 
+<div align="center">
+  <img src="assets/architecture.png" alt="Modular Multi-Agent AI Framework Architecture" width="100%" style="border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);" />
+</div>
+
 ```mermaid
 graph TD
     UserQuery["🎯 User Goal / Complex Query"] --> Supervisor["👔 Supervisor Agent (Team Lead)"]
@@ -103,6 +107,8 @@ To understand advanced AI agent systems without getting lost in textbook theory,
 
 ```text
 Modular-Multi-Agent-AI-Framework/
+├── assets/
+│   └── architecture.png      # High-res Eraser.io Architecture Diagram
 ├── core/
 │   ├── base_tool.py          # BaseTool ABC, FunctionTool & @tool decorator
 │   ├── base_memory.py        # Message schema, BaseMemory ABC, SlidingWindow & SemanticMemory
@@ -246,7 +252,7 @@ Use this complete blueprint to record and publish an engaging YouTube tutorial o
 * **Script**: *"Everyone knows how to pip install LangChain or CrewAI. But if an interviewer asks you how the ReAct loop, tool reflection, or memory buffers actually work under the hood, most developers get stuck. In this video, we are going to build a production-grade Multi-Agent AI Framework completely from scratch in Python with zero external libraries."*
 
 #### **1:15 - 3:00 | Architecture & The 5 Analogies**
-* **Visual**: Show the Mermaid architecture diagram and the Real-World Analogy section from the README.
+* **Visual**: Show the Eraser.io Architecture Diagram (`assets/architecture.png`) and the Real-World Analogy section from the README.
 * **Script**: *"We will build this using 5 intuitive concepts: 1) The Swiss Army Knife tool contract, 2) Human working memory buffers, 3) The Metro Card tap-in/tap-out telemetry tracker, 4) The Detective ReAct loop with emergency brakes, and 5) The Rohit Sharma Cricket Captain supervisor pattern."*
 
 #### **3:00 - 5:30 | Milestone 1 & 2: Tools & Memory Engine**
